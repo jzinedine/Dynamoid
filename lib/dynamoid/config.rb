@@ -14,8 +14,7 @@ module Dynamoid
     option :adapter, :default => 'aws-sdk'
     option :namespace, :default => defined?(Rails) ? "dynamoid_#{Rails.application.class.parent_name}_#{Rails.env}" : "dynamoid"
     option :logger, :default => defined?(Rails)
-    option :access_key
-    option :secret_key
+    # option :credentials
     option :read_capacity, :default => 100
     option :write_capacity, :default => 20
     option :warn_on_scan, :default => true

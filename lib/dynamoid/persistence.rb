@@ -29,21 +29,25 @@ module Dynamoid
       # @since 0.4.0
       def create_table(options = {})
         if self.range_key
-          range_key_hash = { range_key => dynamo_type(attributes[range_key][:type]) }
+          range_key_hash = {range_key => dynamo_type(attributes[range_key][:type])}
         else
           range_key_hash = nil
         end
         options = {
-          :id => self.hash_key,
-          :table_name => self.table_name,
-          :write_capacity => self.write_capacity,
-          :read_capacity => self.read_capacity,
-          :range_key => range_key_hash
+            attribute_definitions: self.attributes.slice(:id).collect { |field, type| {attribute_name: field, attribute_type: dynamo_type(type[:type])} },
+            key_schema: [
+                {attribute_name: self.hash_key, key_type: "HASH"},
+            ], #+ self.attributes.slice(:created_at).collect { |field, type| {attribute_name: field, key_type: "RANGE"} }.to_a(),
+            table_name: self.table_name,
+            provisioned_throughput:
+                {
+                    write_capacity_units: self.write_capacity,
+                    read_capacity_units: self.read_capacity
+                },
         }.merge(options)
 
         return true if table_exists?(options[:table_name])
-
-        Dynamoid::Adapter.tables << options[:table_name] if Dynamoid::Adapter.create_table(options[:table_name], options[:id], options)
+        Dynamoid::Adapter.tables << options[:table_name] if Dynamoid::Adapter.create_table(options)
       end
 
       # Does a table with this name exist?
@@ -54,6 +58,7 @@ module Dynamoid
       end
 
       def from_database(attrs = {})
+        # binding.pry
         clazz = attrs[:type] ? obj = attrs[:type].constantize : self
         clazz.new(attrs).tap { |r| r.new_record = false }
       end
@@ -67,7 +72,7 @@ module Dynamoid
           self.attributes.each do |attribute, options|
             hash[attribute] = undump_field(incoming[attribute], options)
           end
-          incoming.each {|attribute, value| hash[attribute] = value unless hash.has_key? attribute }
+          incoming.each { |attribute, value| hash[attribute] = value unless hash.has_key? attribute }
         end
       end
 
@@ -83,52 +88,55 @@ module Dynamoid
         end
 
         case options[:type]
-        when :string
-          value.to_s
-        when :integer
-          value.to_i
-        when :float
-          value.to_f
-        when :set, :array
-          if value.is_a?(Set) || value.is_a?(Array)
-            value
+          when :string
+            value.to_s
+          when :integer
+            value.to_i
+          when :float
+            value.to_f
+          when :set, :array
+            if value.is_a?(Set) || value.is_a?(Array)
+              value
+            else
+              Set[value]
+            end
+          when :datetime
+            if value.is_a?(Date) || value.is_a?(DateTime) || value.is_a?(Time)
+              value
+            else
+              Time.at(value).to_datetime
+            end
+          when :serialized
+            if value.is_a?(String)
+              options[:serializer] ? options[:serializer].load(value) : YAML.load(value)
+            else
+              value
+            end
+          when :boolean
+            # persisted as 't', but because undump is called during initialize it can come in as true
+            if value == 't' || value == true
+              true
+            elsif value == 'f' || value == false
+              false
+            else
+              raise ArgumentError, "Boolean column neither true nor false"
+            end
           else
-            Set[value]
-          end
-        when :datetime
-          if value.is_a?(Date) || value.is_a?(DateTime) || value.is_a?(Time)
-            value
-          else
-            Time.at(value).to_datetime
-          end
-        when :serialized
-          if value.is_a?(String)
-            options[:serializer] ? options[:serializer].load(value) : YAML.load(value)
-          else
-            value
-          end
-        when :boolean
-          # persisted as 't', but because undump is called during initialize it can come in as true
-          if value == 't' || value == true
-            true
-          elsif value == 'f' || value == false
-            false
-          else
-            raise ArgumentError, "Boolean column neither true nor false"
-          end
-        else
-          raise ArgumentError, "Unknown type #{options[:type]}"
+            raise ArgumentError, "Unknown type #{options[:type]}"
         end
       end
 
       def dynamo_type(type)
+        # binding.pry
         case type
-        when :integer, :float, :datetime
-          :number
-        when :string, :serialized
-          :string
-        else
-          raise 'unknown type'
+          when :integer, :float, :datetime
+            'N'
+          when :string, :serialized
+            'S'
+          when :boolean
+            'B'
+          else
+            raise 'unknown type'
         end
       end
 
@@ -155,10 +163,11 @@ module Dynamoid
     # @since 0.2.0
     def save(options = {})
       self.class.create_table
-      
+
       if new_record?
-        conditions = { :unless_exists => [self.class.hash_key]}
-        conditions[:unless_exists] << range_key if(range_key)
+        conditions= {}
+        # conditions = {:unless_exists => [self.class.hash_key]}
+        # conditions[:unless_exists] << range_key if (range_key)
 
         run_callbacks(:create) { persist(conditions) }
       else
@@ -177,8 +186,8 @@ module Dynamoid
       run_callbacks(:update) do
         options = range_key ? {:range_key => dump_field(self.read_attribute(range_key), self.class.attributes[range_key])} : {}
         new_attrs = Dynamoid::Adapter.update_item(self.class.table_name, self.hash_key, options.merge(:conditions => conditions)) do |t|
-          if(self.class.attributes[:lock_version])
-            raise "Optimistic locking cannot be used with Partitioning" if(Dynamoid::Config.partitioning)
+          if (self.class.attributes[:lock_version])
+            raise "Optimistic locking cannot be used with Partitioning" if (Dynamoid::Config.partitioning)
             t.add(lock_version: 1)
           end
 
@@ -235,29 +244,29 @@ module Dynamoid
       return if value.nil? || (value.respond_to?(:empty?) && value.empty?)
 
       case options[:type]
-      when :string
-        value.to_s
-      when :integer
-        value.to_i
-      when :float
-        value.to_f
-      when :set, :array
-        if value.is_a?(Set) || value.is_a?(Array)
-          value
+        when :string
+          value.to_s
+        when :integer
+          value.to_i
+        when :float
+          value.to_f
+        when :set, :array
+          if value.is_a?(Set) || value.is_a?(Array)
+            value
+          else
+            Set[value]
+          end
+        when :datetime
+          value.to_time.to_f
+        when :serialized
+          options[:serializer] ? options[:serializer].dump(value) : value.to_yaml
+        when :boolean
+          value.to_s[0]
         else
-          Set[value]
-        end
-      when :datetime
-        value.to_time.to_f
-      when :serialized
-        options[:serializer] ? options[:serializer].dump(value) : value.to_yaml
-      when :boolean
-        value.to_s[0]
-      else
-        raise ArgumentError, "Unknown type #{options[:type]}"
+          raise ArgumentError, "Unknown type #{options[:type]}"
       end
     end
-    
+
     # Persist the object into the datastore. Assign it an id first if it doesn't have one; then afterwards,
     # save its indexes.
     #
@@ -265,20 +274,20 @@ module Dynamoid
     def persist(conditions = nil)
       run_callbacks(:save) do
         self.hash_key = SecureRandom.uuid if self.hash_key.nil? || self.hash_key.blank?
-        
+
         # Add an exists check to prevent overwriting existing records with new ones
-        if(new_record?)
+        if (new_record?)
           conditions ||= {}
-          (conditions[:unless_exists] ||= []) << self.class.hash_key
+          # (conditions[:unless_exists] ||= []) << self.class.hash_key
         end
 
         # Add an optimistic locking check if the lock_version column exists
-        if(self.class.attributes[:lock_version])
+        if (self.class.attributes[:lock_version])
           conditions ||= {}
-          raise "Optimistic locking cannot be used with Partitioning" if(Dynamoid::Config.partitioning)
-          self.lock_version = (lock_version || 0) + 1 
+          raise "Optimistic locking cannot be used with Partitioning" if (Dynamoid::Config.partitioning)
+          self.lock_version = (lock_version || 0) + 1
           #Uses the original lock_version value from ActiveModel::Dirty in case user changed lock_version manually
-          (conditions[:if] ||= {})[:lock_version] = changes[:lock_version][0] if(changes[:lock_version][0])
+          (conditions[:if] ||= {})[:lock_version] = changes[:lock_version][0] if (changes[:lock_version][0])
         end
 
         Dynamoid::Adapter.write(self.class.table_name, self.dump, conditions)

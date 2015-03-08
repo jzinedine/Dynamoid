@@ -115,7 +115,7 @@ describe Dynamoid::Adapter::AwsSdk do
     it 'performs CreateTable and DeleteTable' do
       table = Dynamoid::Adapter.create_table('CreateTable', :id, :range_key =>  { :created_at => :number })
 
-      Dynamoid::Adapter.connection.tables.collect{|t| t.name}.should include 'CreateTable'
+      Dynamoid::Adapter.connection.list_tables()[:table_names].should include 'CreateTable'
 
       Dynamoid::Adapter.delete_table('CreateTable')
     end
